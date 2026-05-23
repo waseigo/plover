@@ -247,12 +247,12 @@ defmodule Plover.Connection do
   end
 
   def handle_call({:command, name, args}, from, %State{} = state) do
-    # Extract timeout if the caller passed it as the last argument
+    # Extract :timeout if the caller passed it as the last argument
     {timeout, clean_args} =
-      case List.last(args) do
-        opts when is_list(opts) ->
-          {Keyword.get(opts, :timeout, @default_timeout), List.delete_at(args, -1)}
-
+      with last <- List.last(args),
+           {:timeout, t} <- last do
+        {t, List.delete_at(args, -1)}
+      else
         _ ->
           {@default_timeout, args}
       end
