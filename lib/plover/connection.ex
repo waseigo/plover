@@ -247,8 +247,8 @@ defmodule Plover.Connection do
   end
 
   def handle_call({:command, name, args}, from, %State{} = state) do
-    # Extract :timeout if the caller passed it as the last argument
-    {timeout, args} =
+    # Extract timeout if the caller passed it as the last argument
+    {timeout, clean_args} =
       case List.last(args) do
         opts when is_list(opts) ->
           {Keyword.get(opts, :timeout, @default_timeout), List.delete_at(args, -1)}
@@ -258,8 +258,8 @@ defmodule Plover.Connection do
       end
 
     {tag, state} = State.next_tag(state)
-    Log.command_sent(tag, name, args)
-    cmd = %Command{tag: tag, name: name, args: args}
+    Log.command_sent(tag, name, clean_args)
+    cmd = %Command{tag: tag, name: name, args: clean_args}
     iodata = CommandBuilder.build(cmd)
 
     # Only arm active:once when this is the first pending command.
