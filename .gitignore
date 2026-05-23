@@ -21,3 +21,6 @@ plover-*.tar
 
 # Temporary files, for example, from tests.
 /tmp/
+
+# IEx history
+erlang-shell-log.*
