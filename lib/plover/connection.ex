@@ -673,7 +673,7 @@ defmodule Plover.Connection do
 
   # --- Helpers ---
 
-  defp command(conn, command_name, args, opts \\ [])
+  defp command(conn, command_name, args, opts)
        when is_binary(command_name) and is_list(args) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
 
