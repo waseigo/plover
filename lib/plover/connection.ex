@@ -250,7 +250,7 @@ defmodule Plover.Connection do
     # Extract :timeout if the caller passed it as the last argument
     {timeout, args} =
       case List.last(args) do
-        opts when is_list(opts) and Keyword.keyword?(opts) ->
+        opts when is_list(opts) ->
           {Keyword.get(opts, :timeout, @default_timeout), List.delete_at(args, -1)}
 
         _ ->
