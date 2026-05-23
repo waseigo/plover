@@ -14,6 +14,8 @@ defmodule Plover.Connection do
   alias Plover.Response.{Tagged, Continuation, Mailbox, Message, ESearch}
   alias Plover.Response.{Capability, Condition, Enabled, Unhandled}
 
+  @default_timeout 5_000
+
   # --- Client API ---
 
   @doc false
@@ -101,46 +103,46 @@ defmodule Plover.Connection do
     args = if date, do: args ++ [date], else: args
     args = args ++ [{:literal, message}]
 
-    GenServer.call(conn, {:command, "APPEND", args})
+    command(conn, "APPEND", args, opts)
   end
 
   @doc false
-  def list(conn, reference, pattern) do
-    GenServer.call(conn, {:command, "LIST", [reference, pattern]})
+  def list(conn, reference, pattern, opts \\ []) do
+    command(conn, "LIST", [reference, pattern], opts)
   end
 
   @doc false
-  def status(conn, mailbox, attrs) do
+  def status(conn, mailbox, attrs, opts \\ []) do
     attr_str = attrs |> Enum.map(&status_attr_to_string/1) |> Enum.join(" ")
-    GenServer.call(conn, {:command, "STATUS", [mailbox, {:raw, "(#{attr_str})"}]})
+    command(conn, "STATUS", [mailbox, {:raw, "(#{attr_str})"}], opts)
   end
 
   @doc false
-  def fetch(conn, sequence, attrs) do
+  def fetch(conn, sequence, attrs, opts \\ []) do
     attr_str = fetch_attrs_to_string(attrs)
-    GenServer.call(conn, {:command, "FETCH", [sequence, {:raw, attr_str}]})
+    command(conn, "FETCH", [sequence, {:raw, attr_str}], opts)
   end
 
   @doc false
-  def search(conn, criteria) do
-    GenServer.call(conn, {:command, "SEARCH", [criteria]})
+  def search(conn, criteria, opts \\ []) do
+    command(conn, "SEARCH", [criteria], opts)
   end
 
   @doc false
-  def store(conn, sequence, action, flags) do
+  def store(conn, sequence, action, flags, opts \\ []) do
     action_str = store_action_to_string(action)
     flag_str = flags_to_string(flags)
-    GenServer.call(conn, {:command, "STORE", [sequence, action_str, {:raw, flag_str}]})
+    command(conn, "STORE", [sequence, action_str, {:raw, flag_str}], opts)
   end
 
   @doc false
-  def copy(conn, sequence, mailbox) do
-    GenServer.call(conn, {:command, "COPY", [sequence, mailbox]})
+  def copy(conn, sequence, mailbox, opts \\ []) do
+    command(conn, "COPY", [sequence, mailbox], opts)
   end
 
   @doc false
-  def move(conn, sequence, mailbox) do
-    GenServer.call(conn, {:command, "MOVE", [sequence, mailbox]})
+  def move(conn, sequence, mailbox, opts \\ []) do
+    command(conn, "MOVE", [sequence, mailbox], opts)
   end
 
   @doc false
@@ -155,36 +157,36 @@ defmodule Plover.Connection do
 
   # UID variants
   @doc false
-  def uid_fetch(conn, sequence, attrs) do
+  def uid_fetch(conn, sequence, attrs, opts \\ []) do
     attr_str = fetch_attrs_to_string(attrs)
-    GenServer.call(conn, {:command, "UID FETCH", [sequence, {:raw, attr_str}]})
+    command(conn, "UID FETCH", [sequence, {:raw, attr_str}], opts)
   end
 
   @doc false
-  def uid_store(conn, sequence, action, flags) do
+  def uid_store(conn, sequence, action, flags, opts \\ []) do
     action_str = store_action_to_string(action)
     flag_str = flags_to_string(flags)
-    GenServer.call(conn, {:command, "UID STORE", [sequence, action_str, {:raw, flag_str}]})
+    command(conn, "UID STORE", [sequence, action_str, {:raw, flag_str}], opts)
   end
 
   @doc false
-  def uid_copy(conn, sequence, mailbox) do
-    GenServer.call(conn, {:command, "UID COPY", [sequence, mailbox]})
+  def uid_copy(conn, sequence, mailbox, opts \\ []) do
+    command(conn, "UID COPY", [sequence, mailbox], opts)
   end
 
   @doc false
-  def uid_move(conn, sequence, mailbox) do
-    GenServer.call(conn, {:command, "UID MOVE", [sequence, mailbox]})
+  def uid_move(conn, sequence, mailbox, opts \\ []) do
+    command(conn, "UID MOVE", [sequence, mailbox], opts)
   end
 
   @doc false
-  def uid_search(conn, criteria) do
-    GenServer.call(conn, {:command, "UID SEARCH", [criteria]})
+  def uid_search(conn, criteria, opts \\ []) do
+    command(conn, "UID SEARCH", [criteria], opts)
   end
 
   @doc false
-  def uid_expunge(conn, sequence) do
-    GenServer.call(conn, {:command, "UID EXPUNGE", [sequence]})
+  def uid_expunge(conn, sequence, opts \\ []) do
+    command(conn, "UID EXPUNGE", [sequence], opts)
   end
 
   # --- GenServer callbacks ---
@@ -245,6 +247,16 @@ defmodule Plover.Connection do
   end
 
   def handle_call({:command, name, args}, from, %State{} = state) do
+    # Extract :timeout if the caller passed it as the last argument
+    {timeout, args} =
+      case List.last(args) do
+        opts when is_list(opts) and Keyword.keyword?(opts) ->
+          {Keyword.get(opts, :timeout, @default_timeout), List.delete_at(args, -1)}
+
+        _ ->
+          {@default_timeout, args}
+      end
+
     {tag, state} = State.next_tag(state)
     Log.command_sent(tag, name, args)
     cmd = %Command{tag: tag, name: name, args: args}
@@ -256,17 +268,18 @@ defmodule Plover.Connection do
     # would pull the next response prematurely from the transport.
     needs_active = map_size(state.pending) == 0
 
+    pending_entry = %{
+      from: from,
+      command: name,
+      responses: [],
+      timeout: timeout
+    }
+
     case iodata do
       {:literal, first_part, literal_data} ->
         :ok = state.transport.send(state.socket, first_part)
 
-        pending =
-          Map.put(state.pending, tag, %{
-            from: from,
-            command: name,
-            responses: [],
-            literal: literal_data
-          })
+        pending = Map.put(state.pending, tag, Map.put(pending_entry, :literal, literal_data))
 
         state = %{state | pending: pending, pending_order: state.pending_order ++ [tag]}
         if needs_active, do: :ok = state.transport.setopts(state.socket, active: :once)
@@ -274,7 +287,7 @@ defmodule Plover.Connection do
 
       _ ->
         :ok = state.transport.send(state.socket, iodata)
-        pending = Map.put(state.pending, tag, %{from: from, command: name, responses: []})
+        pending = Map.put(state.pending, tag, pending_entry)
         state = %{state | pending: pending, pending_order: state.pending_order ++ [tag]}
         if needs_active, do: :ok = state.transport.setopts(state.socket, active: :once)
         {:noreply, state}
@@ -298,7 +311,14 @@ defmodule Plover.Connection do
         Log.idle_done_sent()
         :ok = state.transport.send(state.socket, CommandBuilder.build_done())
         pending = Map.put(state.pending, tag, %{from: from, command: "IDLE", responses: []})
-        state = %{state | idle_state: nil, pending: pending, pending_order: state.pending_order ++ [tag]}
+
+        state = %{
+          state
+          | idle_state: nil,
+            pending: pending,
+            pending_order: state.pending_order ++ [tag]
+        }
+
         :ok = state.transport.setopts(state.socket, active: :once)
         {:noreply, state}
 
@@ -652,6 +672,17 @@ defmodule Plover.Connection do
   end
 
   # --- Helpers ---
+
+  defp command(conn, command_name, args, opts \\ [])
+       when is_binary(command_name) and is_list(args) do
+    timeout = Keyword.get(opts, :timeout, @default_timeout)
+
+    GenServer.call(
+      conn,
+      {:command, command_name, args ++ [timeout: timeout]},
+      timeout
+    )
+  end
 
   defp maybe_store_capabilities(%Capability{capabilities: caps}, %State{} = state) do
     %{state | capabilities: MapSet.new(caps)}
